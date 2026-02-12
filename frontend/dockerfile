@@ -1,0 +1,27 @@
+# ---------- build ----------
+FROM node:20.17.0-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+RUN npm run build
+
+
+# ---------- runtime ----------
+FROM nginx:1.27-alpine
+
+RUN rm -rf /usr/share/nginx/html/* \
+    && apk add --no-cache wget
+
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+HEALTHCHECK CMD wget -qO- http://localhost || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

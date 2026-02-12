@@ -1,0 +1,37 @@
+networks:
+  app-net:
+
+services:
+
+  backend:
+    image: codewithaayush7/chat-backend:${TAG}
+    restart: unless-stopped
+    networks:
+      - app-net
+    env_file:
+      - .env
+    expose:
+      - "5001"
+    mem_limit: 300m
+    cpus: 0.50
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+
+  frontend:
+    image: codewithaayush7/chat-frontend:${TAG}
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "80:80"
+    mem_limit: 200m
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

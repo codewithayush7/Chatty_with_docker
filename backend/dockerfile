@@ -1,0 +1,23 @@
+FROM node:20.17.0-alpine
+
+WORKDIR /app
+
+RUN addgroup -S nodegrp && adduser -S nodeusr -G nodegrp
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY src ./src
+
+RUN chown -R nodeusr:nodegrp /app
+
+ENV NODE_ENV=production
+
+USER nodeusr
+
+EXPOSE 5001
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD wget -qO- http://localhost:5001/health || exit 1
+
+CMD ["node", "src/server.js"]
