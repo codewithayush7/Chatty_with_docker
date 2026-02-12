@@ -38,8 +38,6 @@ jobs:
           tags: |
             ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
             ${{ env.BACKEND_IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Build & Push Frontend
         uses: docker/build-push-action@v5
@@ -49,8 +47,6 @@ jobs:
           tags: |
             ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
             ${{ env.FRONTEND_IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # -----------------------------
 
