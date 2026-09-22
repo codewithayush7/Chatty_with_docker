@@ -10,12 +10,15 @@ import userRoutes from "./routes/user.route.js";
 import chatRoutes from "./routes/chat.route.js";
 
 import { connectDB } from "./lib/db.js";
-import { sendEmail } from "./lib/sendEmail.js";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT;
+
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
 
 const __dirname = path.resolve();
 
@@ -31,16 +34,6 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
-
-app.get("/test-email", async (req, res) => {
-  await sendEmail({
-    to: "any_email@gmail.com",
-    subject: "Brevo test",
-    html: "<h1>Brevo works 🎉</h1>",
-  });
-
-  res.send("Email sent");
-});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);

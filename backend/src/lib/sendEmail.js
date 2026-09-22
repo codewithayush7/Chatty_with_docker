@@ -16,7 +16,7 @@ export const sendEmail = async ({ to, subject, html }) => {
     // 👇 MUST exactly match a verified sender
     sender: {
       name: "Chatty",
-      email: "themidnightmind.ai@gmail.com",
+      email: process.env.BREVO_SENDER_EMAIL,
     },
   };
 

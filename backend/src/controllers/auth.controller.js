@@ -1,47 +1,80 @@
 import { upsertStreamUser } from "../lib/stream.js";
-import User from "../models/User.js";
+import User, { isValidProfilePicUrl } from "../models/User.js";
 import { sendEmail } from "../lib/sendEmail.js";
 import { generateRawToken, hashToken } from "../lib/token.js";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+
+// Constant dummy bcrypt hash (cost 10) to mitigate login timing side channels / account enumeration (SEC-07)
+const DUMMY_PASSWORD_HASH =
+  "$2b$10$KaCqiscWf0uZMtt6DiXZV.2jBSLdWNRFl0wZ2cHvM7LdnJLpCi9O6";
+
+const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export const isValidEmail = (email) => {
+  return typeof email === "string" && EMAIL_REGEX.test(email.trim());
+};
+
+export const getAuthCookieOptions = () => ({
+  maxAge: COOKIE_MAX_AGE,
+  httpOnly: true,
+  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production",
+});
+
+export const setAuthCookie = (res, token) => {
+  res.cookie("jwt", token, getAuthCookieOptions());
+};
+
+export const clearAuthCookie = (res) => {
+  res.clearCookie("jwt", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  });
+};
+
 
 /* ===================== SIGNUP ===================== */
 export async function signup(req, res) {
-  console.log("\n========== SIGNUP CALLED ==========");
-  console.log("Request body:", req.body);
-
   const { email, password, fullName } = req.body;
 
   try {
-    if (!email || !password || !fullName) {
-      console.log("❌ Missing fields");
+    if (
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      typeof fullName !== "string" ||
+      !email.trim() ||
+      !password ||
+      !fullName.trim()
+    ) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
     if (password.length < 6) {
-      console.log("❌ Password too short");
       return res
         .status(400)
         .json({ message: "Password must be at least 6 characters" });
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      console.log("❌ Invalid email format");
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!isValidEmail(normalizedEmail)) {
       return res.status(400).json({ message: "Invalid email format" });
     }
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
-      console.log("❌ Email already exists");
       return res.status(400).json({
         message: "Email already exists, please use a different one",
       });
     }
 
-    console.log("✅ Creating new user...");
+    console.log("Creating new user account...");
     const newUser = await User.create({
-      email,
-      fullName,
+      email: normalizedEmail,
+      fullName: fullName.trim(),
       password,
       isEmailVerified: false,
     });
@@ -50,16 +83,11 @@ export async function signup(req, res) {
 
     // Email verification token
     const rawToken = generateRawToken();
-    console.log("📧 Generated raw token:", rawToken);
-
     newUser.emailVerificationToken = hashToken(rawToken);
-    console.log("🔐 Hashed token:", newUser.emailVerificationToken);
-
     newUser.emailVerificationTokenExpires = Date.now() + 30 * 60 * 1000; // 30 min
     newUser.lastVerificationEmailSentAt = Date.now();
 
     await newUser.save();
-    console.log("✅ User saved to database");
 
     // Stream user
     try {
@@ -68,13 +96,11 @@ export async function signup(req, res) {
         name: newUser.fullName,
         image: newUser.profilePic,
       });
-      console.log("✅ Stream user created");
     } catch (err) {
-      console.error("❌ Stream user error:", err.message);
+      console.error("Stream user error:", err.message);
     }
 
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${rawToken}`;
-    console.log("📧 Verification URL:", verificationUrl);
 
     await sendEmail({
       to: newUser.email,
@@ -87,15 +113,14 @@ export async function signup(req, res) {
       `,
     });
 
-    console.log("✅ Email sent successfully");
-    console.log("========================================\n");
+    console.log("Signup successful and verification email sent");
 
     res.status(201).json({
       success: true,
       message: "Signup successful. Please verify your email.",
     });
   } catch (error) {
-    console.error("❌ Signup error:", error);
+    console.error("Signup error:", error.message || error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 }
@@ -105,12 +130,24 @@ export async function login(req, res) {
   const { email, password } = req.body;
 
   try {
-    if (!email || !password) {
+    if (
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      !email.trim() ||
+      !password
+    ) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    const user = await User.findOne({ email }).select("+password");
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!isValidEmail(normalizedEmail)) {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail }).select("+password");
     if (!user) {
+      // Mitigate login timing side channel by performing constant-round bcrypt comparison
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
@@ -130,17 +167,15 @@ export async function login(req, res) {
       expiresIn: "7d",
     });
 
-    // ✅ SET COOKIE (THIS WAS MISSING)
-    res.cookie("jwt", token, {
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-    });
+    // ✅ SET COOKIE
+    setAuthCookie(res, token);
+
+    const userResponse = user.toObject();
+    delete userResponse.password;
 
     res.status(200).json({
       success: true,
-      user,
+      user: userResponse,
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -149,55 +184,28 @@ export async function login(req, res) {
 }
 
 /* ===================== VERIFY EMAIL ===================== */
-/* ===================== VERIFY EMAIL ===================== */
 export async function verifyEmail(req, res) {
   const token = req.body.token || req.query.token;
 
-  console.log("\n========== VERIFY EMAIL CALLED ==========");
-  console.log("Raw token received:", token);
-  console.log("Token length:", token?.length);
-
-  if (!token) {
-    console.log("❌ No token provided");
+  if (typeof token !== "string" || !token.trim()) {
     return res.status(400).json({ message: "Token is required" });
   }
 
+  const cleanToken = token.trim();
+
   try {
-    const hashedToken = hashToken(token);
-    console.log("Hashed token:", hashedToken);
-
-    // First, let's see ALL users with verification tokens
-    const allUsersWithTokens = await User.find({
-      emailVerificationToken: { $exists: true, $ne: null },
-    }).select("email emailVerificationToken emailVerificationTokenExpires");
-
-    console.log("\n📋 All users with verification tokens:");
-    allUsersWithTokens.forEach((u) => {
-      console.log(`  - ${u.email}`);
-      console.log(`    Token: ${u.emailVerificationToken}`);
-      console.log(`    Expires: ${new Date(u.emailVerificationTokenExpires)}`);
-      console.log(
-        `    Match: ${u.emailVerificationToken === hashedToken ? "✅ YES" : "❌ NO"}`,
-      );
-    });
+    const hashedToken = hashToken(cleanToken);
 
     const user = await User.findOne({
       emailVerificationToken: hashedToken,
       emailVerificationTokenExpires: { $gt: Date.now() },
     });
 
-    console.log("\n🔍 Query result:");
-    console.log("User found:", user ? `YES - ${user.email}` : "NO");
-
     if (!user) {
-      console.log("❌ No matching user found");
       return res.status(400).json({
         message: "Token is invalid or expired",
       });
     }
-
-    console.log("\n📝 Before update:");
-    console.log("  isEmailVerified:", user.isEmailVerified);
 
     // ✅ MARK USER AS VERIFIED
     user.isEmailVerified = true;
@@ -207,14 +215,6 @@ export async function verifyEmail(req, res) {
 
     await user.save();
 
-    console.log("\n📝 After save:");
-    console.log("  isEmailVerified:", user.isEmailVerified);
-
-    // Double check in DB
-    const verifyInDb = await User.findById(user._id);
-    console.log("\n📝 DB verification:");
-    console.log("  isEmailVerified:", verifyInDb.isEmailVerified);
-
     // ✅ ISSUE JWT
     const jwtToken = jwt.sign(
       { userId: user._id },
@@ -223,23 +223,16 @@ export async function verifyEmail(req, res) {
     );
 
     // ✅ SET COOKIE
-    res.cookie("jwt", jwtToken, {
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      secure: process.env.NODE_ENV === "production",
-    });
+    setAuthCookie(res, jwtToken);
 
-    console.log("\n✅ SUCCESS - Cookie set, responding");
-    console.log("========================================\n");
+    console.log("User email verified successfully");
 
     res.status(200).json({
       success: true,
       message: "Email verified successfully",
     });
   } catch (error) {
-    console.error("\n❌ ERROR:", error);
-    console.log("========================================\n");
+    console.error("Email verification error:", error.message || error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 }
@@ -290,11 +283,16 @@ export async function resendVerificationEmail(req, res) {
 export async function forgotPassword(req, res) {
   const { email } = req.body;
 
-  if (!email) {
+  if (typeof email !== "string" || !email.trim()) {
     return res.status(400).json({ message: "Email is required" });
   }
 
-  const user = await User.findOne({ email });
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!isValidEmail(normalizedEmail)) {
+    return res.status(400).json({ message: "Invalid email format" });
+  }
+
+  const user = await User.findOne({ email: normalizedEmail });
 
   if (!user) {
     return res.status(200).json({
@@ -329,7 +327,12 @@ export async function forgotPassword(req, res) {
 export async function resetPassword(req, res) {
   const { token, password } = req.body;
 
-  if (!token || !password) {
+  if (
+    typeof token !== "string" ||
+    typeof password !== "string" ||
+    !token.trim() ||
+    !password
+  ) {
     return res.status(400).json({ message: "Invalid request" });
   }
 
@@ -339,8 +342,10 @@ export async function resetPassword(req, res) {
       .json({ message: "Password must be at least 6 characters" });
   }
 
+  const cleanToken = token.trim();
+
   const user = await User.findOne({
-    passwordResetToken: hashToken(token),
+    passwordResetToken: hashToken(cleanToken),
     passwordResetTokenExpires: { $gt: Date.now() },
   });
 
@@ -364,7 +369,7 @@ export async function resetPassword(req, res) {
 
 /* ===================== LOGOUT ===================== */
 export function logout(req, res) {
-  res.clearCookie("jwt");
+  clearAuthCookie(res);
   res.status(200).json({
     success: true,
     message: "Logout successful",
@@ -376,35 +381,67 @@ export async function onboard(req, res) {
   try {
     const userId = req.user._id;
 
-    const { fullName, bio, nativeLanguage, learningLanguage, location } =
-      req.body;
+    const {
+      fullName,
+      bio,
+      nativeLanguage,
+      learningLanguage,
+      location,
+      profilePic,
+    } = req.body;
 
     if (
-      !fullName ||
-      !bio ||
-      !nativeLanguage ||
-      !learningLanguage ||
-      !location
+      typeof fullName !== "string" ||
+      typeof bio !== "string" ||
+      typeof nativeLanguage !== "string" ||
+      typeof learningLanguage !== "string" ||
+      typeof location !== "string" ||
+      !fullName.trim() ||
+      !bio.trim() ||
+      !nativeLanguage.trim() ||
+      !learningLanguage.trim() ||
+      !location.trim()
     ) {
       return res.status(400).json({
         message: "All fields are required",
         missingFields: [
-          !fullName && "fullName",
-          !bio && "bio",
-          !nativeLanguage && "nativeLanguage",
-          !learningLanguage && "learningLanguage",
-          !location && "location",
+          (typeof fullName !== "string" || !fullName.trim()) && "fullName",
+          (typeof bio !== "string" || !bio.trim()) && "bio",
+          (typeof nativeLanguage !== "string" || !nativeLanguage.trim()) && "nativeLanguage",
+          (typeof learningLanguage !== "string" || !learningLanguage.trim()) && "learningLanguage",
+          (typeof location !== "string" || !location.trim()) && "location",
         ].filter(Boolean),
       });
     }
 
+    const updateData = {
+      fullName: fullName.trim(),
+      bio: bio.trim(),
+      nativeLanguage: nativeLanguage.trim(),
+      learningLanguage: learningLanguage.trim(),
+      location: location.trim(),
+      isOnboarded: true,
+    };
+
+    if (profilePic !== undefined) {
+      if (typeof profilePic !== "string") {
+        return res.status(400).json({ message: "Invalid profile picture URL" });
+      }
+      const trimmedPic = profilePic.trim();
+      if (trimmedPic) {
+        if (!isValidProfilePicUrl(trimmedPic)) {
+          return res
+            .status(400)
+            .json({ message: "Invalid profile picture URL" });
+        }
+        updateData.profilePic = trimmedPic;
+      }
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      {
-        ...req.body,
-        isOnboarded: true,
-      },
-      { new: true },
+      updateData,
+      { new: true, runValidators: true },
     );
 
     if (!updatedUser) {

@@ -12,18 +12,18 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@getbrevo/brevo": "^3.0.1",
+    "@getbrevo/brevo": "^3.0.4",
     "bcryptjs": "^3.0.2",
     "chatty": "file:..",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
-    "express": "^4.21.0",
-    "jsonwebtoken": "^9.0.2",
+    "express": "^4.22.3",
+    "express-rate-limit": "^8.7.0",
+    "jsonwebtoken": "^9.0.3",
     "mongodb": "^6.17.0",
-    "mongoose": "^8.13.2",
-    "resend": "^6.9.1",
-    "stream-chat": "^8.60.0"
+    "mongoose": "^8.24.4",
+    "stream-chat": "^9.53.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
